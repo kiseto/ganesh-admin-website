@@ -1,0 +1,78 @@
+import { createRequire } from "node:module";
+import { readFile, writeFile } from "node:fs/promises";
+import assert from "node:assert/strict";
+const require = createRequire(import.meta.url);
+const { chromium } = require(process.env.PLAYWRIGHT_PACKAGE_PATH || "C:/Users/RL/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright");
+const access = await readFile(".local-setup/admin-access.txt", "utf8");
+const email = access.match(/^Email: (.+)$/m)[1];
+const password = access.match(/^Temporary password: (.+)$/m)[1];
+const browser = await chromium.launch({ headless: true, channel: "msedge" });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+const page = await context.newPage();
+const errors = [];
+page.on("pageerror", (error) => errors.push(error.message));
+let original;
+let version;
+let saved = false;
+const origin = "http://localhost:3001";
+try {
+  await page.goto(`${origin}/login`, { waitUntil: "networkidle", timeout: 60000 });
+  await page.getByLabel("Email address", { exact: true }).fill(email);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Sign in to Admin" }).click();
+  await page.waitForURL("**/dashboard", { timeout: 60000 });
+  console.log("PASS: browser login and protected dashboard");
+  original = await (await context.request.get(`${origin}/api/content`)).json();
+  const publication = await (await context.request.get(`${origin}/api/public-content`)).json();
+  assert.deepEqual(original.content, publication, "Do not overwrite an existing user draft.");
+  await page.goto(`${origin}/editor`, { waitUntil: "networkidle", timeout: 60000 });
+  await page.getByRole("button", { name: "Save Draft", exact: true }).waitFor({ state: "visible" });
+  await page.locator("#ge-home .ge-editable-text").first().click();
+  await page.getByLabel("Content", { exact: true }).fill("Browser smoke — private draft");
+  await page.getByRole("button", { name: "Apply change" }).click();
+  const draftResponse = page.waitForResponse((response) => response.url().endsWith("/api/content") && response.request().method() === "PUT");
+  await page.getByRole("button", { name: "Save Draft", exact: true }).click();
+  const draft = await (await draftResponse).json();
+  assert.equal(draft.ok, true, JSON.stringify(draft)); version = draft.version; saved = true;
+  assert.deepEqual(await (await context.request.get(`${origin}/api/public-content`)).json(), publication);
+  console.log("PASS: Visual Editor saves a private draft using real controls");
+  // A second unsaved edit proves Save & Publish includes the current canvas, not an older saved draft.
+  await page.locator("#ge-home .ge-editable-text").first().click();
+  await page.getByLabel("Content", { exact: true }).fill("Browser smoke — unsaved edit published");
+  await page.getByRole("button", { name: "Apply change" }).click();
+  await page.getByRole("button", { name: "Save & Publish", exact: true }).click();
+  const publishedResponse = page.waitForResponse((response) => response.url().endsWith("/api/content") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Publish changes", exact: true }).click();
+  const published = await (await publishedResponse).json();
+  assert.equal(published.ok, true, JSON.stringify(published)); version = published.version;
+  const live = await (await context.request.get(`${origin}/api/public-content`)).json();
+  assert.equal(live.pages.home.hero.eyebrow, "Browser smoke — unsaved edit published");
+  assert.deepEqual(live.products, original.content.products, "Unedited product details were changed.");
+  assert.deepEqual(live.global, original.content.global, "Unedited settings were changed.");
+  console.log("PASS: Save & Publish includes unsaved edits and preserves unrelated settings/details");
+  await page.screenshot({ path: ".visual-qa/admin-editor-desktop.png" });
+  await page.goto(`${origin}/content`, { waitUntil: "networkidle", timeout: 60000 });
+  await page.locator(".cms-group").filter({ has: page.locator("summary", { hasText: "Fabrics" }) }).first().locator("summary").first().click();
+  await page.screenshot({ path: ".visual-qa/admin-content-desktop.png" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.querySelector(".admin-sidebar").getBoundingClientRect().right <= 1);
+  await page.screenshot({ path: ".visual-qa/admin-content-mobile.png", animations: "disabled" });
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+  assert.equal(overflow, false, "Content editor overflows on mobile.");
+  await page.goto(`${origin}/settings/general`, { waitUntil: "networkidle", timeout: 60000 });
+  assert.equal(await page.getByLabel("Business name").inputValue(), original.content.global.businessName);
+  assert.equal(await page.getByLabel("About summary").inputValue(), original.content.pages.home.brandStatement.copy);
+  console.log("PASS: settings load real saved values; content editor works on desktop/mobile");
+} finally {
+  if (saved) {
+    const restore = await context.request.put(`${origin}/api/content`, { headers: { origin }, data: { content: original.content, version } });
+    const result = await restore.json();
+    assert.equal(restore.status(), 200, "Restore conflict. Do not override another editor's work.");
+    const publish = await context.request.post(`${origin}/api/content`, { headers: { origin }, data: { version: result.version } });
+    assert.equal(publish.status(), 200);
+    console.log("PASS: browser test restored the original public content");
+  }
+  await writeFile(".local-setup/browser-smoke-errors.json", JSON.stringify(errors, null, 2));
+  await browser.close();
+}
+assert.deepEqual(errors, [], "Browser runtime errors were detected.");

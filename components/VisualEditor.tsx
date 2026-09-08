@@ -1,0 +1,200 @@
+"use client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { contentSnapshotSchema, type ContentSnapshot } from "@/lib/content/schema";
+import { initialContent } from "@/lib/content/seed";
+import { validateOrderBuilderConfig } from "@/lib/content/validation";
+import { editorTargets, pageTargets, pages, getAt, setAt, type EditorTarget, type PageId } from "@/lib/visual-editor";
+import { EditorDialog, EditorFields, fieldLabel } from "./EditorFields";
+import "./visual-editor.css";
+
+type Session = { token: string; origin: string; expiresAt: number };
+type Panel = { target: EditorTarget; values: Record<string, unknown> };
+export default function VisualEditor() {
+  const frame = useRef<HTMLIFrameElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const [content, setContent] = useState<ContentSnapshot | null>(null);
+  const [version, setVersion] = useState(0);
+  const [page, setPage] = useState<PageId>("home");
+  const [device, setDevice] = useState("desktop");
+  const [editable, setEditable] = useState(true);
+  const [dirty, setDirty] = useState(false);
+  const [past, setPast] = useState<ContentSnapshot[]>([]);
+  const [future, setFuture] = useState<ContentSnapshot[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [canPublish, setCanPublish] = useState(false);
+  useEffect(() => { fetch("/api/auth/me", { cache: "no-store" }).then((r) => r.json()).then((user) => setCanPublish(user.permissions?.publish === true)).catch(() => undefined); }, []);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const [previewError, setPreviewError] = useState("");
+  const [refreshPending, setRefreshPending] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [ready, setReady] = useState(false);
+  const [selected, setSelected] = useState("hero");
+  const [panel, setPanel] = useState<Panel | null>(null);
+  const [publishConfirm, setPublishConfirm] = useState(false);
+  const [remove, setRemove] = useState<{ title: string; apply: () => void } | null>(null);
+  const mediaCache = useRef(new Map<string, string>());
+  const targets = useMemo(() => content ? editorTargets(page, content) : [], [page, content]);
+  const sections = pageTargets(page);
+  useEffect(() => {
+    if (!panel) return;
+    const timer = requestAnimationFrame(() => panelRef.current?.querySelector<HTMLElement>("textarea,input,button")?.focus());
+    return () => cancelAnimationFrame(timer);
+  // Focus enters the side panel once when an editable target is selected.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [panel?.target.id]);
+  const post = useCallback((message: Record<string, unknown>) => {
+    if (session) frame.current?.contentWindow?.postMessage({ source: "ganesh-admin-editor", token: session.token, ...message }, session.origin);
+  }, [session]);
+  const startPreview = useCallback(async () => {
+    setPreviewError(""); setReady(false);
+    try {
+      const response = await fetch("/api/editor-preview", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Preview could not start.");
+      setSession(result);
+    } catch (failure) { setPreviewError(failure instanceof Error ? failure.message : "Preview unavailable."); }
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/content", { cache: "no-store", signal: controller.signal }).then(async (response) => {
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Cannot load the saved draft.");
+      setContent(contentSnapshotSchema.parse(result.content)); setVersion(result.version);
+      void startPreview();
+    }).catch((failure) => { if (!controller.signal.aborted) setError(failure.message ?? "Cannot load the saved draft."); });
+    return () => controller.abort();
+  }, [startPreview]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => { if (dirty || panel) event.preventDefault(); };
+    window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty, panel]);
+  useEffect(() => {
+    if (!session) return;
+    const timer = setTimeout(() => void startPreview(), Math.max(1000, session.expiresAt - Date.now() - 60000));
+    return () => clearTimeout(timer);
+  }, [session, startPreview]);
+  useEffect(() => {
+    if (!session || ready) return;
+    const timer = setTimeout(() => setPreviewError("The public preview did not respond. Check that the public app is running, then reconnect. Your edits are retained."), 20000);
+    return () => clearTimeout(timer);
+  }, [session, ready]);
+  function openPanel(target: EditorTarget) {
+    if (!content || !editable || busy || uploading) return;
+    if (panel) { setError("Apply or cancel the open edit panel before selecting another item. Your edits are retained."); return; }
+    setSelected(target.id); setError("");
+    setPanel({ target, values: Object.fromEntries(target.paths.filter((path) => getAt(content, path) !== undefined).map((path) => [path, structuredClone(getAt(content, path))])) });
+  }
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      if (!session || event.source !== frame.current?.contentWindow || event.origin !== session.origin) return;
+      const data = event.data;
+      if (!data || typeof data !== "object" || data.source !== "ganesh-public-preview" || data.token !== session.token) return;
+      if (data.type === "ready") { setReady(true); setPreviewError(""); }
+      if (data.type === "error" && typeof data.message === "string") setPreviewError(data.message.slice(0, 500));
+      if (data.type === "select" && typeof data.id === "string") { const target = targets.find((entry) => entry.id === data.id); if (target) openPanel(target); }
+      if (data.type === "navigate" && typeof data.page === "string" && Object.hasOwn(pages, data.page)) { setPage(data.page as PageId); setSelected("hero"); }
+    };
+    window.addEventListener("message", receive); return () => window.removeEventListener("message", receive);
+  // Selection must use the latest working snapshot, without remounting the iframe.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, targets, content, editable, busy, uploading, panel]);
+  useEffect(() => {
+    if (!ready || !content) return;
+    let cancelled = false;
+    // Private uploaded media is read by the authenticated admin, never by the
+    // public image optimizer. Only in-memory data URLs enter the preview frame.
+    async function sync() {
+      const sources = new Set<string>();
+      function visit(value: unknown) {
+        if (!value || typeof value !== "object") return;
+        if ("src" in value && typeof value.src === "string") {
+          const url = new URL(value.src, location.origin);
+          if (url.origin === location.origin && url.pathname.startsWith("/media/content/")) sources.add(url.href);
+        }
+        Object.values(value).forEach(visit);
+      }
+      visit(content);
+      try {
+        await Promise.all([...sources].map(async (src) => {
+          if (mediaCache.current.has(src)) return;
+          const response = await fetch(src, { cache: "no-store" });
+          if (!response.ok) throw new Error("A draft image could not load. Sign in again or replace the image.");
+          const blob = await response.blob();
+          const data = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob); });
+          mediaCache.current.set(src, data);
+        }));
+        if (!cancelled) post({ type: "snapshot", content, page, editable, targets: targets.map(({ id, label, selector }) => ({ id, label, selector })), media: Object.fromEntries([...sources].map((src) => [src, mediaCache.current.get(src)])) });
+      } catch (failure) { if (!cancelled) setPreviewError(failure instanceof Error ? failure.message : "Preview image failed."); }
+    }
+    void sync(); return () => { cancelled = true; };
+  }, [content, ready, page, editable, targets, post]);
+  function validate(next: ContentSnapshot) {
+    const parsed = contentSnapshotSchema.safeParse(next);
+    if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${issue.path.join(" › ")}: ${issue.message}`).join("\n"));
+    const errors = validateOrderBuilderConfig(parsed.data.orderBuilder);
+    if (errors.length) throw new Error(errors.join(" "));
+    return parsed.data;
+  }
+  function applyPanel() {
+    if (!content || !panel) return;
+    try {
+      let next = content;
+      for (const [path, value] of Object.entries(panel.values)) next = setAt(next, path, value);
+      const validated = validate(next);
+      setPast((history) => [...history.slice(-19), content]); setFuture([]);
+      setContent(validated); setDirty(true); setPanel(null); setError(""); setStatus("Changes applied to the visual preview. Save Draft to keep them.");
+      post({ type: "restore-focus" });
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Please check the content."); }
+  }
+  async function save(publish: boolean) {
+    if (!content || busy || uploading || panel) return;
+    setBusy(true); setError(""); setStatus("");
+    try {
+      const snapshot = validate(content);
+      const response = await fetch("/api/content", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: snapshot, version }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(response.status === 409 ? "Another administrator saved a newer draft. Your changes are still here. Keep this tab open and coordinate with the other administrator before reloading." : result.error ?? "Save failed.");
+      setVersion(result.version); setDirty(false); setStatus("Private draft saved.");
+      if (publish) {
+        const response = await fetch("/api/content", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: result.version }) });
+        const published = await response.json();
+        if (!response.ok) throw new Error(published.error ?? "Draft saved; publication failed.");
+        setRefreshPending(!published.revalidated); setStatus(published.revalidated ? "Published. The public website is up to date." : "Published. Public cache refresh needs a retry.");
+      }
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Connection failed. Your edits are retained."); }
+    finally { setBusy(false); }
+  }
+  function undo() {
+    if (!content || !past.length || panel || busy || uploading) return;
+    setFuture((history) => [...history, content]); setContent(past[past.length - 1]); setPast((history) => history.slice(0, -1)); setDirty(true); setError(""); setStatus("Previous working draft restored. Save to keep this change.");
+  }
+  function redo() {
+    if (!content || !future.length || panel || busy || uploading) return;
+    setPast((history) => [...history, content]); setContent(future[future.length - 1]); setFuture((history) => history.slice(0, -1)); setDirty(true); setError(""); setStatus("Change reapplied to the working draft.");
+  }
+  return <div className="ve-editor"><header className="ve-toolbar"><Link className="ve-brand" href="/dashboard">GANESH <span>ADMIN</span></Link><label>Page<select aria-label="Page" value={page} onChange={(event) => { setPage(event.target.value as PageId); setSelected("hero"); }}>{Object.entries(pages).map(([id, entry]) => <option key={id} value={id}>{entry.label}</option>)}</select></label><div className="ve-mode"><button aria-pressed={editable} onClick={() => setEditable(true)}>Edit</button><button aria-pressed={!editable} onClick={() => setEditable(false)}>Preview</button></div><label>Viewport<select aria-label="Viewport" value={device} onChange={(event) => setDevice(event.target.value)}><option value="desktop">Desktop</option><option value="tablet">Tablet · 768 px</option><option value="mobile">Mobile · 390 px</option></select></label><span className="ve-save-state">{dirty || panel ? "● Unsaved changes" : `Draft v${version}`}</span><button disabled={!content || busy || uploading || !!panel} onClick={() => void save(false)}>{busy ? "Saving…" : "Save Draft"}</button>{canPublish ? <button className="primary" disabled={!content || busy || uploading || !!panel} onClick={() => setPublishConfirm(true)}>Save &amp; Publish</button> : <span className="ve-save-state">Draft access · Ask an authorized team member to publish</span>}</header>
+    <div className="ve-status" aria-live="polite"><span>{pages[page].label} · {editable ? "Edit mode" : "Preview mode"} · {targets.find((t) => t.id === selected)?.label ?? "Page"}</span><span>{status}</span>{panel ? <span>Apply or cancel the open panel before saving.</span> : null}</div>
+    {error ? <div className="ve-error" role="alert">{error}</div> : null}
+    {refreshPending ? <button onClick={async () => { const response = await fetch("/api/content/revalidate", { method: "POST" }).catch(() => null); if (response?.ok) { setRefreshPending(false); setStatus("Public refresh completed."); } else setError("Public refresh still unavailable. Try again."); }}>Retry public refresh</button> : null}
+    <div className="ve-workspace"><aside className="ve-sidebar"><h1>Visual Editor</h1><p>{editable ? "Use the website normally. Choose an Edit action to change its content." : "Customer view. Editing controls are hidden."}</p><nav aria-label="Page sections">{sections.map((section) => <div className={selected === section.id ? "selected" : ""} key={section.id}><button onClick={() => { setSelected(section.id); post({ type: "scroll", selector: section.selector }); }}>{section.label}</button>{editable ? <button aria-label={`Edit ${section.label}`} disabled={!content || uploading || busy} onClick={() => openPanel(section)}>Edit</button> : null}</div>)}</nav><div className="ve-history"><button disabled={!past.length || !!panel || busy || uploading} onClick={undo}>Undo</button><button disabled={!future.length || !!panel || busy || uploading} onClick={redo}>Redo</button></div></aside>
+    <main className="ve-canvas-area"><div className={`ve-canvas ve-device-${device}`}>
+      {!content ? <div className="ve-loading" role="status">Loading saved draft…</div> : null}
+      {session ? <iframe ref={frame} title="Ganesh website visual preview" src={`${session.origin}/editor-preview?token=${encodeURIComponent(session.token)}`} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer" /> : null}
+      {content && (!ready || previewError) ? <div className="ve-loading" role="status"><p>{previewError || "Connecting to the private public-site preview…"}</p>{previewError ? <button onClick={() => void startPreview()}>Reconnect preview</button> : null}</div> : null}
+    </div></main>
+    {panel ? <aside ref={panelRef} className="ve-panel" aria-label="Edit content panel"><header><div><small>EDIT CONTENT</small><h2>{panel.target.label}</h2></div><button aria-label="Cancel editing" disabled={uploading} onClick={() => { setPanel(null); setError(""); post({ type: "restore-focus" }); }}>×</button></header><p>The website stays visible beside this panel. Apply changes to update it immediately.</p><fieldset disabled={uploading || busy}>{Object.entries(panel.values).map(([path, value]) => <EditorFields key={path} name={/^products\.\d+$/.test(path) ? "Product" : fieldLabel(path.split(".").at(-1)!)} value={value} template={getAt(initialContent, path)} products={content?.products ?? []} publicOrigin={session?.origin ?? "http://localhost:3000"} onBusy={setUploading} onChange={(next) => setPanel((current) => current ? { ...current, values: { ...current.values, [path]: next } } : current)} requestRemove={(title, item, apply) => {
+      if (item && typeof item === "object" && "id" in item && path.startsWith("products")) {
+        const references = content?.workCategories.filter((category) => category.story.relatedProductIds.includes(String(item.id))).map((category) => category.label) ?? [];
+        if (references.length) { setError(`Cannot remove ${title}: referenced by ${references.join(", ")}. Edit those Our Work stories and uncheck the related product first.`); return; }
+      }
+      setRemove({ title, apply });
+    }} />)}</fieldset>{error ? <p className="ve-error" role="alert">{error}</p> : null}<footer><button disabled={uploading} onClick={() => { setPanel(null); setError(""); post({ type: "restore-focus" }); }}>Cancel</button><button className="primary" disabled={uploading || busy} onClick={applyPanel}>Apply changes</button></footer></aside> : null}</div>
+    {publishConfirm ? <EditorDialog title="Publish the current draft?" onClose={() => setPublishConfirm(false)}><p>The exact current working draft will become visible on the public Ganesh website.</p><footer><button onClick={() => setPublishConfirm(false)}>Cancel</button><button className="primary" onClick={() => { setPublishConfirm(false); void save(true); }}>Publish changes</button></footer></EditorDialog> : null}
+    {remove ? <EditorDialog title={`Remove ${remove.title}?`} onClose={() => setRemove(null)}><p>This removes the item from the working draft. Uploaded media and saved revision history are retained.</p><footer><button onClick={() => setRemove(null)}>Cancel</button><button className="primary" onClick={() => { remove.apply(); setRemove(null); }}>Remove item</button></footer></EditorDialog> : null}
+  </div>;
+}
+
+

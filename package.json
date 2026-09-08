@@ -6,12 +6,24 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "next typegen && tsc --noEmit",
+    "db:migrate": "node --experimental-strip-types scripts/migrate.ts",
+    "setup:local": "node --experimental-strip-types scripts/setup-local.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "seed:content": "node --experimental-strip-types scripts/seed-content.ts",
+    "migrate:content": "node --experimental-strip-types scripts/extend-content.ts",
+    "create:admin": "node --experimental-strip-types scripts/create-admin.ts",
+    "validate:content": "node --experimental-strip-types scripts/validate-content-seed.ts"
   },
   "dependencies": {
+    "@next/env": "16.3.4",
+    "mysql2": "^3.19.1",
     "next": "16.3.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "sharp": "^0.35.4",
+    "zod": "^4.1.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
