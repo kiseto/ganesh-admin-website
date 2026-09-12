@@ -5,7 +5,7 @@ import { contentSnapshotSchema, type ContentSnapshot } from "@/lib/content/schem
 import { initialContent } from "@/lib/content/seed";
 import { validateOrderBuilderConfig } from "@/lib/content/validation";
 import { editorTargets, pageTargets, pages, getAt, setAt, type EditorTarget, type PageId } from "@/lib/visual-editor";
-import { EditorDialog, EditorFields, fieldLabel } from "./EditorFields";
+import { EditorDialog, EditorFields } from "./EditorFields";
 import "./visual-editor.css";
 
 type Session = { token: string; origin: string; expiresAt: number };
@@ -185,7 +185,7 @@ export default function VisualEditor() {
       {session ? <iframe ref={frame} title="Ganesh website visual preview" src={`${session.origin}/editor-preview?token=${encodeURIComponent(session.token)}`} sandbox="allow-scripts allow-same-origin allow-forms allow-popups" referrerPolicy="no-referrer" /> : null}
       {content && (!ready || previewError) ? <div className="ve-loading" role="status"><p>{previewError || "Connecting to the private public-site preview…"}</p>{previewError ? <button onClick={() => void startPreview()}>Reconnect preview</button> : null}</div> : null}
     </div></main>
-    {panel ? <aside ref={panelRef} className="ve-panel" aria-label="Edit content panel"><header><div><small>EDIT CONTENT</small><h2>{panel.target.label}</h2></div><button aria-label="Cancel editing" disabled={uploading} onClick={() => { setPanel(null); setError(""); post({ type: "restore-focus" }); }}>×</button></header><p>The website stays visible beside this panel. Apply changes to update it immediately.</p><fieldset disabled={uploading || busy}>{Object.entries(panel.values).map(([path, value]) => <EditorFields key={path} name={/^products\.\d+$/.test(path) ? "Product" : fieldLabel(path.split(".").at(-1)!)} value={value} template={getAt(initialContent, path)} products={content?.products ?? []} publicOrigin={session?.origin ?? "http://localhost:3000"} onBusy={setUploading} onChange={(next) => setPanel((current) => current ? { ...current, values: { ...current.values, [path]: next } } : current)} requestRemove={(title, item, apply) => {
+    {panel ? <aside ref={panelRef} className="ve-panel" aria-label="Edit content panel"><header><div><small>EDIT CONTENT</small><h2>{panel.target.label}</h2></div><button aria-label="Cancel editing" disabled={uploading} onClick={() => { setPanel(null); setError(""); post({ type: "restore-focus" }); }}>×</button></header><p>The website stays visible beside this panel. Apply changes to update it immediately.</p><fieldset disabled={uploading || busy}>{Object.entries(panel.values).map(([path, value]) => <EditorFields key={path} name={/^products\.\d+$/.test(path) ? "Product" : path.split(".").at(-1)!} value={value} template={getAt(initialContent, path)} products={content?.products ?? []} publicOrigin={session?.origin ?? "http://localhost:3000"} onBusy={setUploading} onChange={(next) => setPanel((current) => current ? { ...current, values: { ...current.values, [path]: next } } : current)} requestRemove={(title, item, apply) => {
       if (item && typeof item === "object" && "id" in item && path.startsWith("products")) {
         const references = content?.workCategories.filter((category) => category.story.relatedProductIds.includes(String(item.id))).map((category) => category.label) ?? [];
         if (references.length) { setError(`Cannot remove ${title}: referenced by ${references.join(", ")}. Edit those Our Work stories and uncheck the related product first.`); return; }

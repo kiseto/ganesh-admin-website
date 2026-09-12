@@ -7,24 +7,31 @@ export const pages: Record<PageId, { label: string; route: string }> = {
 };
 export type EditorTarget = { id: string; label: string; selector: string; paths: string[] };
 const target = (id: string, label: string, selector: string, ...paths: string[]): EditorTarget => ({ id, label, selector, paths });
-const footer = target("footer", "Contact / Footer", "footer", "pages.home.footer", "global");
-const fabrics = target("fabrics", "Fabrics", "#fabrics", "pages.home.fabrics", "fabrics", "editorial.labels.sections");
-const order = target("order", "Order Builder", "#customize", "pages.home.order", "orderBuilder", "editorial.labels.builder");
-const help = target("help", "Size Guide / FAQ", "#help", "pages.home.help", "sizeGuides", "faqs", "editorial.labels.help");
-export function pageTargets(page: PageId): EditorTarget[] {
+const header = target("header", "Header and navigation", ".site-header", "global.businessName", "global.nav", "editorial.labels.header", "global.quoteLabel", "global.logo");
+const footer = target("footer", "Footer and contact details", "footer", ...["kicker", "heading", "copy", "primary", "secondary", "details"].map((key) => `pages.home.footer.${key}`), ...["tagline", "establishedYear", "location", "phone", "email", "address", "hours"].map((key) => `global.${key}`), "pages.home.footer.legal");
+const pageCopy = (page: PageId, ...keys: string[]) => keys.map((key) => `pages.${page}.${key}`);
+const fabrics = target("fabrics", "Fabrics", "#fabrics", "pages.home.fabrics", "fabrics", "editorial.labels.sections.showing", "editorial.labels.sections.fabricDisclaimer");
+const order = target("order", "Order form", "#customize", "pages.home.order", "orderBuilder", "editorial.labels.builder");
+const help = target("help", "Size guide and questions", "#help", "pages.home.help", "sizeGuides", "faqs", "editorial.labels.help");
+function mainTargets(page: PageId): EditorTarget[] {
   if (page === "home") return [
-    target("hero", "Hero", "#home", "pages.home.hero", "global"),
-    target("brand", "Brand Statement", ".brand-statement", "pages.home.brandStatement"),
-    target("products", "Products / View Product Modal", "#products", "pages.home.whatWeMake", "products", "editorial.labels.productDialog"),
-    fabrics, target("production", "Production", "#production", "pages.home.production", "productionSteps"),
-    target("work", "Our Work", "#work", "pages.home.work", "workCategories"), order,
-    target("values", "Values", "#why", "pages.home.values", "brandValues"), help, footer,
+    target("hero", "Main section", "#home", "pages.home.hero"),
+    target("brand", "About Ganesh", ".brand-statement", "pages.home.brandStatement"),
+    target("products", "Products and product details", "#products", "pages.home.whatWeMake", "products", "editorial.labels.productDialog"),
+    fabrics, target("production", "Production", "#production", "pages.home.production", "productionSteps", "editorial.labels.sections.exploreProduction"),
+    target("work", "Our Work", "#work", "pages.home.work", "workCategories", "editorial.labels.sections.exploreWork", "editorial.labels.sections.workDisclaimer"), order,
+    target("values", "Values", "#why", "pages.home.values", "brandValues"), help,
   ];
-  const hero = target("hero", "Page Hero / Copy", ".interior-hero", `pages.${page}`, ...(page === "customize" || page === "production" ? [`editorial.images.${page}Hero`] : []));
-  if (page === "products") return [hero, target("products", "Product Catalog / Modal Content", "#catalog", "products", "editorial.labels.productDialog"), fabrics, target("cta", "Product CTA", "#products-cta", "pages.products"), footer];
-  if (page === "customize") return [hero, order, target("product-options", "Product Options", "#order-product-heading", "products"), target("fabric-options", "Fabric Options", "#order-material-heading", "fabrics"), target("options", "Customization / Sizing Options", "#order-details-heading", "orderBuilder"), help, footer];
-  if (page === "ourWork") return [hero, target("stories", "Categories / Stories / Gallery", "#work-stories", "workCategories"), footer];
-  return [hero, target("steps", "Process Steps", "#journey", "productionSteps"), target("preparation", "Preparation Content", "#before-production", "editorial.productionPreparation"), target("questions", "Questions / FAQ", "#production-questions", "editorial.productionQuestions"), footer];
+  const heroButtons = { products: ["exploreCollection"], customize: ["buildOrder", "helpLink"], ourWork: ["exploreWork"], production: ["followJourney", "journeyLink", "preparationLink", "questionsLink"] };
+  const hero = target("hero", "Main section", ".interior-hero", ...pageCopy(page, "heroEyebrow", "heroTitleFirst", "heroTitleSecond", "heroLead", ...heroButtons[page], "heroCaption", "heroCaptionFirst", "heroCaptionSecond"), ...(page === "customize" || page === "production" ? [`editorial.images.${page}Hero`] : []));
+  if (page === "products") return [hero, target("products", "Products and product details", "#catalog", ...pageCopy(page, "collectionKicker", "collectionHeadingFirst", "collectionHeadingSecond", "fabricLink", "buildOrder", "specialRequest"), "products", "editorial.labels.productDialog"), fabrics, target("cta", "Explore our work", "#products-cta", ...pageCopy(page, "nextHeading", "nextCopy", "nextAction"))];
+  if (page === "customize") return [hero, target("preparation", "Before you order", ".customize-preparation", ...pageCopy(page, "preparationIdeaTitle", "preparationIdeaCopy", "preparationGroupTitle", "preparationGroupCopy", "preparationDateTitle", "preparationDateCopy")), order, target("product-options", "Product options", "#order-product-heading", "products"), target("fabric-options", "Fabric options", "#order-material-heading", "fabrics"), target("options", "Customization and sizes", "#order-details-heading", "orderBuilder"), help];
+  if (page === "ourWork") return [hero, target("stories", "Stories and images", "#work-stories", "workCategories", ...pageCopy(page, "focusLabel", "briefLabel", "garmentsHeading", "garmentsCopy"))];
+  return [hero, target("steps", "Production steps", "#journey", ...pageCopy(page, "journeyKicker", "journeyTitleFirst", "journeyTitleSecond", "journeyCopy"), "productionSteps"), target("preparation", "Before production", "#before-production", ...pageCopy(page, "preparationKicker", "preparationTitleFirst", "preparationTitleSecond", "preparationCopy"), "editorial.productionPreparation", ...pageCopy(page, "buildOrder")), target("questions", "Questions and answers", "#production-questions", ...pageCopy(page, "questionsKicker", "questionsTitleFirst", "questionsTitleSecond", "questionsCopy"), "editorial.productionQuestions", ...pageCopy(page, "moreGuidance"))];
+}
+export function pageTargets(page: PageId): EditorTarget[] {
+  const seo = target("seo", "Search appearance (SEO)", "head", ...(page === "home" ? ["global.seo"] : pageCopy(page, "metaTitle", "metaDescription")), "global.favicon", "global.socialPreview");
+  return [header, ...mainTargets(page), footer, seo];
 }
 export function editorTargets(page: PageId, content: ContentSnapshot): EditorTarget[] {
   const result = [...pageTargets(page)];

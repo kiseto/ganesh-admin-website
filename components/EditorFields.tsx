@@ -2,8 +2,8 @@
 /* eslint-disable @next/next/no-img-element */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { ContentSnapshot } from "@/lib/content/schema";
+import { editorFieldEntries, fieldLabel, isHiddenEditorField } from "@/lib/editor-fields";
 
-export const fieldLabel = (name: string) => name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 export function EditorDialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -41,8 +41,10 @@ type Props = { name: string; value: unknown; template?: unknown; onChange: (valu
 export function EditorFields(props: Props) {
   const { name, value, template, onChange, products, publicOrigin, onBusy, requestRemove } = props;
   const id = useId();
-  if (["id", "schemaVersion", "order", "assetId"].includes(name)) return null;
+  if (isHiddenEditorField(name)) return null;
   const child = (key: string, entry: unknown, change: (value: unknown) => void, sample?: unknown) => <EditorFields {...props} key={key} name={key} value={entry} template={sample} onChange={change} />;
+  // Menu items keep their destinations and order; admins edit only the displayed text.
+  if (name === "nav" && Array.isArray(value)) return <fieldset><legend>Menu text</legend>{value.map((item, index) => object(item) ? <div key={index}>{child(`Menu item ${index + 1}`, item.label, (next) => onChange(value.map((entry, i) => i === index ? { ...item, label: next } : entry)))}</div> : null)}</fieldset>;
   if (name === "relatedProductIds" && Array.isArray(value)) return <fieldset><legend>Related products</legend>{products.map((product) => <label className="ve-check" key={product.id}><input type="checkbox" checked={value.includes(product.id)} onChange={(event) => onChange(event.target.checked ? [...value, product.id] : value.filter((id) => id !== product.id))} />{product.name}</label>)}</fieldset>;
   if (Array.isArray(value)) {
     const items: unknown[] = value;
@@ -65,7 +67,7 @@ export function EditorFields(props: Props) {
   }
   if (object(value)) {
     if (typeof value.src === "string" && "alt" in value) return <fieldset><legend>{fieldLabel(name)}</legend><MediaField value={value} onChange={onChange} publicOrigin={publicOrigin} onBusy={onBusy} /></fieldset>;
-    return <fieldset><legend>{fieldLabel(name)}</legend>{Object.entries(value).map(([key, entry]) => child(key, entry, (next) => onChange({ ...value, [key]: next }), object(template) ? template[key] : undefined))}</fieldset>;
+    return <fieldset><legend>{fieldLabel(name)}</legend>{editorFieldEntries(value).map(([key, entry]) => child(key, entry, (next) => onChange({ ...value, [key]: next }), object(template) ? template[key] : undefined))}</fieldset>;
   }
   if (typeof value === "boolean") return <label className="ve-check"><input type="checkbox" checked={value} onChange={(event) => onChange(event.target.checked)} />{fieldLabel(name)}{name === "active" ? " on the public website" : ""}</label>;
   return <div className="ve-field"><label htmlFor={id}>{fieldLabel(name)}</label>{typeof value === "number" ? <input id={id} type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} /> : <textarea id={id} rows={/description|details|copy|lead|answer/i.test(name) ? 4 : 2} value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} />}</div>;
